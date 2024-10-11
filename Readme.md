@@ -1,4 +1,4 @@
-# Scalable Django-Based Movie Recommendation System on AWS
+# Secure & Scalable Lottery System for Affordable Housing on AWS
 ![AWS Architecture Diagram](https://github.com/JasonTeixeira/Scalable-Django-Based-Movie-Recommendation-System-on-AWS/blob/main/Project-10%20AWS%20Architecture%20Diagram.drawio.png)
 
 ### **Project Summary**
