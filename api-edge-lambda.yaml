@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cloudformation stack that create an CloudFrontDistribution with s3
+  orgin, route53, APIGateway linked with DynamoDBTable through LambdaFunction,
+  EventBridge, cognito, sqs, sns and stepfunctions.
+
+Parameters:
+  ACMcertificateArn:
+    Description: The ACM certificate ARN of the domain, must be in the us-east-1 region.
+    Type: String
+
+  DomainName:
+    Description: The Domain name
+    Type: String
+
+  EnvironmentName:
+    Type: String
+
+Resources:
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              # TODO implement
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Hello from Lambda!')
+              }
+      FunctionName: apitest
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Role: !GetAtt IAMRole.Arn
+
+  APIGatewayRestAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: RestApi
+    DependsOn:
+      - LambdaFunction
+
+  APIGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt APIGatewayRestAPI.RootResourceId
+      PathPart: '{proxy+}'
+    DependsOn:
+      - APIGatewayRestAPI
+
+  APIGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction.Arn}/invocations
+          - LambdaFuncNameArn: !GetAtt LambdaFunction.Arn
+          
+  APIGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName: !Ref EnvironmentName
+    DependsOn:
+      - APIGatewayMethod
+
+  APIGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
+        - ApiId: !Ref APIGatewayRestAPI
+    DependsOn:
+      - APIGatewayDeployment
+
+  APIGatewayCustomDomainName:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: !Sub api.${DomainName}
+      CertificateArn: !Ref ACMcertificateArn
+      EndpointConfiguration:
+        Types:
+          - EDGE
+
+  APIDNS:
+    Type: AWS::Route53::RecordSetGroup
+    DependsOn: APIGatewayCustomDomainName
+    Properties:
+      HostedZoneName: !Join
+        - ''
+        - - !Ref DomainName
+          - .
+      RecordSets:
+        - Name: !Sub api.${DomainName}
+          Type: A
+          AliasTarget:
+            HostedZoneId: !GetAtt APIGatewayCustomDomainName.DistributionHostedZoneId
+            DNSName: !GetAtt APIGatewayCustomDomainName.DistributionDomainName
+
+  APIMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Properties:
+      DomainName: !Sub api.${DomainName}
+      RestApiId: !Ref APIGatewayRestAPI
+
+  IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: Policy_api-lambda-db
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:CreateLogGroup
+                  - logs:PutLogEvents
+                Resource: '*'
+    
+   ## COGNITO#######################################################################################
+  UserPool:
+    Type: "AWS::Cognito::UserPool"
+    Properties:
+      UserPoolName: "user-pool"
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Schema:
+        - AttributeDataType: String
+          Name: email
+          Required: true
+        - AttributeDataType: String
+          Name: phone_number
+          Required: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true  
+
+Outputs:
+  APIDomainName:
+    Description: Invoke URL for the custom domain
+    Value: !Sub https://api.${DomainName}/${EnvironmentName}/${APIGatewayResource}
+
+  UserPoolId:
+    Value: !Ref UserPool
+
+
+

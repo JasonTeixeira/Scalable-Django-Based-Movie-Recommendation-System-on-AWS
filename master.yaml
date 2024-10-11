@@ -1,0 +1,214 @@
+Description: |
+  This template deploys a VPC, with a pair of public and private subnets spread  across two Availabilty Zones. It deploys an Internet Gateway, with a default  route on the public subnets. It deploys a pair of NAT Gateways (one in each AZ),  and default routes for them in the private subnets.
+
+Parameters:
+  S3Bucket:
+    Description: The S3 Bucket where the cloudformation templates are stored
+    Type: String
+    Default: bucket1
+
+  S3BucketSubfolder:
+    Description: The S3 Bucket subfolder where the cloudformation templates are stored (if any)
+    Type: String
+    Default: cloudformation
+
+  DomainName:
+    Type: String
+    Default: keturahtech.shop
+  
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+
+  EC2ServerInstanceType:
+    Description: The instance type that will be used for Web, App and Db servers.
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - g3.8xlarge
+      - r5.large
+      - r5.xlarge
+      - r5.2xlarge
+      - r5.4xlarge
+      - r3.12xlarge
+      - i3.xlarge
+      - i3.2xlarge
+      - i3.4xlarge
+      - i3.8xlarge
+      - d2.xlarge
+      - d2.2xlarge
+      - d2.4xlarge
+      - d2.8xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the Bastion host
+    Type: String
+    MinLength: 9
+    MaxLength: 18
+    Default: 0.0.0.0/0
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  AsgMaxSize:
+    Type: Number
+    Description: Maximum size and initial desired capacity of Auto Scaling Group
+    Default: 2
+
+  ACMcertificateArn:
+    Type: String
+    Description: The ACM certificate Arn for the domain in the specific region where you are running this cloudformation.
+    Default: arn:aws:acm:us-east-1:239189448851:certificate/eb2bd14e-049d-45a2-8210-79a47f5d6961
+    
+  SSLcertificateArn:
+    Type: String
+    Description: The ACM certificate ARN of the domainName in us-east-1 region. This will be used by CloudFront.
+    Default: arn:aws:acm:us-east-1:239189448851:certificate/eb2bd14e-049d-45a2-8210-79a47f5d6961
+
+  SslSupportMethod:
+    Description: Specifies how CloudFront serves HTTPS requests.
+    Type: String
+    Default: "sni-only"
+    AllowedValues:
+      - sni-only
+      - vip
+
+  MinimumProtocolVersion:
+    Description: The minimum version of the SSL protocol that you want CloudFront to use for HTTPS connections.
+    Type: String
+    Default: "TLSv1.2_2018"
+    AllowedValues:
+      - TLSv1
+      - TLSv1.2_2018
+      - TLSv1.1_2016
+      - TLSv1_2016
+      - SSLv3
+
+Resources:
+  VPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/vpc.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VpcCIDR: 10.180.0.0/16
+        PublicSubnet1CIDR: 10.180.8.0/21
+        PublicSubnet2CIDR: 10.180.16.0/21
+        PrivateSubnet1CIDR: 10.180.24.0/21
+        PrivateSubnet2CIDR: 10.180.32.0/21
+
+  SecurityGroups:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/security-groups.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        SSHLocation: !Ref SSHLocation
+
+  EC2:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/ec2-asg.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        PrivateSubnets: !GetAtt VPC.Outputs.PrivateSubnets
+        PublicSubnet: !GetAtt VPC.Outputs.PublicSubnet1
+        SecurityGroups: !GetAtt SecurityGroups.Outputs.SecurityGroups
+        BastionSecurityGroup: !GetAtt SecurityGroups.Outputs.BastionSecurityGroup
+        KeyName: !Ref KeyName
+        LatestAmiId: !Ref LatestAmiId
+        EC2ServerInstanceType: !Ref EC2ServerInstanceType
+        AsgMaxSize: !Ref AsgMaxSize      
+
+  ALB:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/load-balancer.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        Subnets: !GetAtt VPC.Outputs.PublicSubnets
+        SecurityGroup: !GetAtt SecurityGroups.Outputs.LoadBalancerSecurityGroup
+        TargetGroupArn: !GetAtt EC2.Outputs.TargetGroupArn
+        ACMcertificateArn: !Ref ACMcertificateArn         
+        SSLcertificateArn: !Ref SSLcertificateArn  
+        SslSupportMethod: !Ref SslSupportMethod
+        MinimumProtocolVersion: !Ref MinimumProtocolVersion 
+        DomainName: !Ref DomainName
+
+  API:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/api-edge-lambda.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        DomainName: !Ref DomainName 
+        ACMcertificateArn: !Ref ACMcertificateArn     
+
+  RDS:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/rds.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName
+        VPC: !GetAtt VPC.Outputs.VPC
+        Subnets: !GetAtt VPC.Outputs.PrivateSubnets
+        SecurityGroups: !GetAtt SecurityGroups.Outputs.SecurityGroups
+
+  Config: 
+    DependsOn: RDS
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub https://s3.amazonaws.com/${S3Bucket}/${S3BucketSubfolder}/config.yaml
+      Parameters:
+        EnvironmentName: !Ref AWS::StackName 
+
+Outputs:
+  WebsiteURL:
+    Description: URL of the website
+    Value: !Sub https://${DomainName}/
+  
+  DynamoDBTableName:
+    Description: "The DynamoDB Table Name"
+    Value: !GetAtt RDS.Outputs.DynamoDBTableName
+  
+  APIDomainName:
+    Description:  URL of the API Gateway.
+    Value: !GetAtt API.Outputs.APIDomainName
+
+  

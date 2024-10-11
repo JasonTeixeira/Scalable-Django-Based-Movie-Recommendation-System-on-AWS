@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+Resources:
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Scope: CLOUDFRONT
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: webACL
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: ExampleRule
+          Priority: 1
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              Limit: 2000
+              AggregateKeyType: IP
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: exampleRule
+            SampledRequestsEnabled: true
+
+  #GuardDuty
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+
+  # Create S3 Bucket for CloudTrail logs
+  CloudTrailS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::AccountId}-cloudtrail-logs
+      VersioningConfiguration:
+        Status: Enabled
+
+  CloudTrailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudTrailS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub arn:aws:s3:::${AWS::AccountId}-cloudtrail-logs/AWSLogs/${AWS::AccountId}/*
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !Sub arn:aws:s3:::${AWS::AccountId}-cloudtrail-logs
+
+  CloudTrailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudTrailPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetBucketAcl
+                  - 's3:GetBucketLocation'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${AWS::AccountId}-cloudtrail-logs/*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:CloudTrail/LogGroup'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:CloudTrail/LogGroup:*'
+
+  CloudWatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: CloudTrail/LogGroup
+
+  CloudTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      TrailName: CloudTrail
+      S3BucketName: !Ref CloudTrailS3Bucket
+      IncludeGlobalServiceEvents: true
+      IsMultiRegionTrail: true
+      EnableLogFileValidation: true
+      CloudWatchLogsLogGroupArn: !GetAtt CloudWatchLogGroup.Arn
+      CloudWatchLogsRoleArn: !GetAtt CloudTrailRole.Arn
+      IsLogging: true
+    DependsOn:
+      - CloudTrailRole
+      - CloudTrailBucketPolicy
+
+  # Create SecurityHub
+  SecurityHub:
+    Type: AWS::SecurityHub::Hub
+    Properties:
+      EnableDefaultStandards: true
+      ControlFindingGenerator: SECURITY_CONTROL
+
+Outputs:
+  WebACLArn:
+    Value: !GetAtt WebACL.Arn
+    Description: The ARN of the Web ACL
+
+  SecurityHubArn:
+    Value: !Ref SecurityHub

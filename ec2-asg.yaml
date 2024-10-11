@@ -1,0 +1,248 @@
+Description: >
+  This template deploys Instances.
+  We create them in a seperate nested template, so it can be referenced by all of the other nested templates.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose which VPC the Application Load Balancer should be deployed to
+  
+  PublicSubnet:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID for public1
+
+  PrivateSubnets:
+    Description: Choose which subnets the AutoScalingGroup should be deployed to
+    Type: CommaDelimitedList
+
+  BastionSecurityGroup:
+    Description: Select the Security Group to apply to the BastionInstance
+    Type: AWS::EC2::SecurityGroup::Id
+
+  SecurityGroups:
+    Description: Select the Security Group to apply to the LaunchConfiguration
+    Type: CommaDelimitedList
+  
+  KeyName:
+    Type: String
+  
+  LatestAmiId:
+      Type: String
+
+  EC2ServerInstanceType:
+    Type: String
+
+  AsgMaxSize:
+    Type: Number  
+
+Resources:
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref EC2ServerInstanceType
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: true
+        DeleteOnTermination: true
+        DeviceIndex: 0
+        SubnetId: !Ref PublicSubnet
+        GroupSet:
+        - Ref: BastionSecurityGroup
+      Tags:
+      - Key: Name
+        Value: Bastion
+      KeyName: !Ref KeyName
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          yum update -y     
+          #install MySQL 
+          yum install mysql -y
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 15
+      HealthCheckPath: /index.html
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetType: 'instance'
+      Matcher:
+        HttpCode: 200-299
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 60
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-Tg          
+
+# Autoscaling
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+        Count:
+          Ref: AsgMaxSize
+    Properties:
+      AvailabilityZones: 
+          - !Select 
+            - '0'
+            - !GetAZs 
+              Ref: 'AWS::Region'
+          - !Select 
+            - '1'
+            - !GetAZs 
+              Ref: 'AWS::Region'
+      VPCZoneIdentifier: !Ref PrivateSubnets
+      LaunchConfigurationName:
+        Ref: LaunchConfiguration
+      MinSize: '1'
+      MaxSize:
+        Ref: AsgMaxSize
+      DesiredCapacity:
+        Ref: AsgMaxSize
+      TargetGroupARNs: 
+        - !Ref TargetGroup
+      HealthCheckType: ELB
+      Tags:
+        - Key: Name
+          Value: Server
+          PropagateAtLaunch: 'true'
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: false
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref EC2ServerInstanceType
+      IamInstanceProfile: !Ref AppsInstanceProfile  
+      KeyName:
+        Ref: KeyName
+      SecurityGroups: !Ref SecurityGroups
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          yum update -y aws-cfn-bootstrap
+          yum install httpd -y 
+          cd /var/www/html && echo "Test page. Success!" >> index.html
+          systemctl enable httpd
+          systemctl start httpd
+          
+          # sudo yum update -y 
+          # sudo yum install -y curl
+
+          # curl -sL https://rpm.nodesource.com/setup_14.x | sudo bash -
+          # sudo yum install -y nodejs
+          # sudo npm install -g serve
+
+          # sudo mkdir -p /var/www/react-app
+          # aws s3 cp s3://s3-bucket/react-app/build /var/www/react-app --recursive
+          # sudo serve -s /var/www/react-app -l 80
+
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AutoScalingGroup --region ${AWS::Region}
+  
+#Instance Role
+  AppsInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+                - codedeploy.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AWS-CodePipeline-Service-3
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: S3Permissions
+                Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                  - s3:PutObject
+                  - s3:GetBucketPolicy
+                Resource: '*'
+              - Sid: SecretsManagerPermissions
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetResourcePolicy
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:ListSecretVersionIds
+                  - secretsmanager:ListSecrets
+                Resource: '*'
+        - PolicyName: ec2-service
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EC2Permissions
+                Effect: Allow
+                Action:
+                  - ec2:AttachNetworkInterface
+                  - ec2:CreateNetworkInterface
+                  - ec2:CreateNetworkInterfacePermission
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DeleteNetworkInterfacePermission
+                  - ec2:Describe*
+                  - ec2:DetachNetworkInterface
+                  - elasticloadbalancing:DeregisterInstancesFromLoadBalancer
+                  - elasticloadbalancing:DeregisterTargets
+                  - elasticloadbalancing:Describe*
+                  - elasticloadbalancing:RegisterInstancesWithLoadBalancer
+                  - elasticloadbalancing:RegisterTargets
+                Resource: '*'
+        - PolicyName: CloudWatch_PutMetricData
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CloudWatchPutMetricData
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  AppsInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    DependsOn: AppsInstanceRole
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: AppsInstanceRole
+
+
+Outputs:
+  
+  Keyname:
+    Description: 'Name of an existing EC2 KeyPair to enable SSH access to the instance'
+    Value: !Ref KeyName
+
+  BastionIP:
+    Description:  IP address of the Bastion Instance
+    Value: !GetAtt [Bastion, PublicIp]   
+
+  TargetGroupArn:
+    Description: The ARN of the target group
+    Value: !GetAtt TargetGroup.TargetGroupArn  

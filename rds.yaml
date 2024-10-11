@@ -1,0 +1,95 @@
+Description: >
+  This template deploys an DynamoDB
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose which VPC the VPCEndpoint should be deployed to
+
+  Subnets:
+    Description: Choose which subnets the AutoScalingGroup should be deployed to
+    Type: CommaDelimitedList 
+
+  SecurityGroups:
+    Description: Select the Security Group to apply to the LaunchConfiguration
+    Type: CommaDelimitedList
+
+Resources:
+# DynamoDB Interface VPC Endpoint
+  DynamoDBVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.dynamodb
+      VpcId: !Ref VPC
+      VpcEndpointType: Interface
+      SubnetIds: !Ref Subnets
+      SecurityGroupIds: !Ref SecurityGroups
+
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: dynamo-db
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: '5'
+        WriteCapacityUnits: '5'
+      SSESpecification:
+        SSEEnabled: true  
+    DependsOn:
+      - IAMRole    
+
+  IAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: Policy_api-lambda-db
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:BatchGetItem'
+                  - 'dynamodb:BatchWriteItem'
+                  - 'dynamodb:TagResource'
+                  - 'dynamodb:UntagResource'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:UpdateItem'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                Resource: '*'    
+
+Outputs:
+  VpcEndpointId:
+    Description: "The VPC Endpoint ID"
+    Value: !Ref DynamoDBVPCEndpoint
+
+  DynamoDBTableName:
+    Description: "The DynamoDB Table Name"
+    Value: !Ref DynamoDBTable                

@@ -1,0 +1,153 @@
+Description: |
+  This template deploys an Application Load Balancer that exposes our various Ec2 services. We create them in a seperate nested template, so it can be referenced by all of the other nested templates.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+
+  VPC:
+    Type: AWS::EC2::VPC::Id
+    Description: Choose which VPC the Application Load Balancer should be deployed to
+
+  Subnets:
+    Description: Choose which subnets the Application Load Balancer should be deployed to
+    Type: List<AWS::EC2::Subnet::Id>
+
+  SecurityGroup:
+    Description: Select the Security Group to apply to the Application Load Balancer
+    Type: AWS::EC2::SecurityGroup::Id
+
+  DomainName:
+    Type: String
+
+  TargetGroupArn:
+    Type: String
+    Description: The ARN of the target group   
+
+  ACMcertificateArn:
+    Type: String
+    Description: The ACM certificate Arn for the domain in the specific region where you are running this cloudformation.
+    
+  SSLcertificateArn:
+    Type: String
+    Description: The ACM certificate ARN of the domainName in us-east-1 region. This will be used by CloudFront.
+
+  SslSupportMethod:
+    Description: Specifies how CloudFront serves HTTPS requests.
+    Type: String
+
+  MinimumProtocolVersion:
+    Description: The minimum version of the SSL protocol that you want CloudFront to use for HTTPS connections.
+    Type: String
+
+Resources:
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      SecurityGroups:
+        - !Ref SecurityGroup
+      Subnets: !Ref Subnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-ALB
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            Host: '#{host}'
+            Path: /index.html
+            Query: '#{query}'
+            StatusCode: HTTP_301
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref TargetGroupArn
+                Weight: 1
+            TargetGroupStickinessConfig:
+              Enabled: true
+              DurationSeconds: 86400
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Certificates:
+        - CertificateArn: !Ref ACMcertificateArn
+      Port: '443'
+      Protocol: HTTPS
+
+#Default TargetGroup
+  DefaultTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${EnvironmentName}-default
+      VpcId: !Ref VPC
+      Port: 80
+      Protocol: HTTP
+
+# Route53 DNS
+  Route53DNSAlias:
+    Type: 'AWS::Route53::RecordSetGroup'
+    Properties:
+      HostedZoneName: !Join ["", [!Ref DomainName, '.']]
+      RecordSets:
+        - Name: !Ref DomainName
+          Type: A
+          AliasTarget:
+            HostedZoneId: Z2FDTNDATAQYW2
+            DNSName: !GetAtt 
+              - CloudFrontDistribution
+              - DomainName
+
+##cloudfront distribution
+  CloudFrontDistribution:
+    Type: 'AWS::CloudFront::Distribution'
+    Properties:
+      DistributionConfig:
+        Aliases:
+          - !Ref 'DomainName'
+        Origins:
+        - DomainName: !GetAtt 'ApplicationLoadBalancer.DNSName'
+          Id: !Ref ApplicationLoadBalancer
+          CustomOriginConfig:
+            HTTPPort: '80'
+            HTTPSPort: '443'
+            OriginProtocolPolicy: https-only
+            OriginKeepaliveTimeout: 5
+            OriginReadTimeout: 30
+            OriginSSLProtocols:
+              - TLSv1
+              - TLSv1.1
+              - TLSv1.2
+        Enabled: 'true'
+        Comment: cloudfront distribution pointing ALB orgin
+        HttpVersion: 'http2'
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - DELETE
+            - OPTIONS
+            - PATCH
+            - POST
+            - PUT
+          Compress: true
+          TargetOriginId: !Ref ApplicationLoadBalancer
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: 216adef6-5c7f-47e4-b989-5492eafa07d3
+          ViewerProtocolPolicy: redirect-to-https
+        ViewerCertificate:
+          AcmCertificateArn: !Ref SSLcertificateArn
+          SslSupportMethod:  !Ref 'SslSupportMethod'
+          MinimumProtocolVersion: !Ref 'MinimumProtocolVersion' 
